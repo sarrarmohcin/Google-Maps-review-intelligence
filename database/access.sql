@@ -1,0 +1,1 @@
+GRANT SELECT, INSERT, DELETE, UPDATE ON TABLE public.gm_reviews TO service_role;

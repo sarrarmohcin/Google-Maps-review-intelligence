@@ -1,16 +1,143 @@
 from camoufox.async_api import AsyncCamoufox
 import asyncio
 import random
-from datetime import datetime,timedelta
+from datetime import datetime,timedelta,timezone
 import dateparser
+from scraper.parser import parse_reviews_response, relative_to_datetime
+import os
+from dotenv import load_dotenv
+from supabase import create_client, Client
+from scraper.inference import ReviewAnalyzer
+import json
 
 class ReviewsExtractor:
-    # ChIJoVAtgOxbwokRLSQFeYiJjOI
-    def __init__(self, url: str, language: str = "en", locale: str = "en-US", date_limit = 3):
+
+    def __init__(self, business_id:str, url: str, language: str = "en", locale: str = "en-US", date_limit = 3):
+        
+        # Ensure keys are present before initializing
+        load_dotenv()
+        supabase_url = os.getenv("SUPABASE_URL")
+        supabase_key = os.getenv("SUPABASE_KEY")
+        
+        # verify if credentials are available
+        if not supabase_url or not supabase_key:
+            raise ValueError("Supabase credentials not found in environment variables")
+        self.supabase: Client = create_client(supabase_url, supabase_key)
+        
+        self.business_id = business_id
         self.url = url
         self.language = language
         self.locale = locale
         self.date_limit = date_limit
+        self.info = None
+        self.data = []
+        
+    async def main(self):
+        # extract reviews
+        await self.extract_reviews()
+        
+        # Remove items from self.data where review_text is empty or None
+        self.data = [item for item in self.data if item.get("review_text")]
+        
+        # add the business name to each review
+        self.data = [{**item, "business_id": self.business_id} for item in self.data]
+        
+        # update business info
+        await self.update_info()
+        
+        # inference reviews
+        inference = ReviewAnalyzer()
+        for review in self.data:
+            review_text = review.get("review_text", "")
+            if review_text:
+                inference_result = inference.inference(review_text)
+                inference_data = {
+                    "overall_sentiment": inference_result.get("overall_sentiment", ""),
+                    "aspects": inference_result.get("aspects", []),
+                    "main_complaint": inference_result.get("main_complaint", ""),
+                    "summary": inference_result.get("summary", "")
+                }
+                
+                review.update(inference_data)
+        
+        # store data to supabase
+        await self.store_data()
+        
+    async def extract_info(self, page):
+        # extratc rating
+        rating_language = {
+            'en' : 'stars',
+            'fr' : 'étoiles'
+        }
+        
+        review_language = {
+            'en' : ['reviews', 'review'],
+            'fr' : ['avis', 'avis']
+        }
+        
+        rating = 0
+        try:
+            rating_div = page.locator(f'div[role="img"][aria-label*="{rating_language[self.language]}"]').first
+            rating_text = await rating_div.get_attribute("aria-label")
+            rating_text = rating_text.replace(rating_language[self.language], "").strip()
+            rating = float(rating_text)
+        except Exception as e:
+            rating = 0
+        
+
+        # extract total reviews number
+        reviews_number = 0
+        try:
+            reviews_number_div = await rating_div.evaluate_handle("el => el.nextElementSibling")
+            reviews_number_text = ""
+            if reviews_number_div:
+                reviews_number_text = await reviews_number_div.text_content()
+            
+            reviews_number_text = reviews_number_text.replace(review_language[self.language][0], '').replace(review_language[self.language][1], '').strip()
+            reviews_number = int(reviews_number_text)
+        except Exception as e:
+            reviews_number = 0
+        
+        return {
+            "rating": rating,
+            "reviews_number": reviews_number
+        }
+    
+    async def update_info(self):
+        try:
+            response = (
+                self.supabase.table("gm_places")
+                .update({
+                    "rating": self.info["rating"],
+                    "reviews": self.info["reviews_number"],
+                    "updated_at": datetime.now(timezone.utc).isoformat()
+                })
+                .eq("id", self.business_id)
+                .execute()
+            )
+            print(f"Updated business info: {response}")
+        except Exception as e:
+            print(f"Insert update: {e}")
+                
+                
+    async def store_data(self):
+        if not self.data:
+            return
+
+        for i, row in enumerate(self.data):
+
+            try:
+                response = self.supabase.table(
+                    "gm_reviews"
+                ).upsert(
+                    row,
+                    on_conflict="review_id"
+                ).execute()
+
+                print(f"Upserted row {i}: {response}")
+
+            except Exception as e:
+                print(f"Upsert error at row {i}: {e}")
 
     async def extract_reviews(self):
         async with AsyncCamoufox(
@@ -21,11 +148,16 @@ class ReviewsExtractor:
             
             # visite page
             page = await browser.new_page()
+            page.on("response", lambda response: self.handle_response(response))
             await page.goto(self.url)
             
             # wait for page loading
             await self.human_delay()
             
+            # extract info
+            info = await self.extract_info(page)
+            self.info = info
+                        
             # click sort button
             sort_btn = await self.sort_reviews(page, language=self.language)
             if not sort_btn:
@@ -35,17 +167,18 @@ class ReviewsExtractor:
             recent_btn = await self.recent_reviews(page, language=self.language)
             if not recent_btn:
                 return
-            
+                        
             # scroll reviews
             await self.review_scroll(page)
             print('Finished scrolling reviews.')
+        
             
-            # click on show more button for each review
-            await self.click_show_more(page)
-            print('Finished clicking show more buttons.')
-            
-            await asyncio.sleep(50000)
-            
+    async def handle_response(self, response):
+        if "listugcposts" in response.url:
+            content = await response.text()
+            reviews = parse_reviews_response(content, self.language)
+            self.data.extend([review.to_dict() for review in reviews])
+        
 
     async def sort_reviews(self, page, language):
         sort_language = {
@@ -143,31 +276,11 @@ class ReviewsExtractor:
             # exist while loop if limit date reached
             if self.date_limit > 0:
                 date_str = await reviews_div[-1].locator('span.rsqaWe').first.text_content()
-                parsed_time = self.string_date_to_timestamp(date_str)
+                parsed_time = relative_to_datetime(date_str, self.language)
                 if parsed_time<date_limit_rev:
                     break
-    
-    async def click_show_more(self, page):
-        
-        more_language = {
-            'en' : 'See more',
-            'fr' : 'Voir plus'
-        }
-        
-        rev_div = page.locator('div[role="main"]').first
-        reviews_div = await rev_div.locator('div[data-review-id][aria-label]').all()
-        for review in reviews_div:
-            try:
-                plus_button = review.locator(f'button[data-review-id][aria-label="{more_language[self.language]}"]').first
-                await plus_button.click(timeout=1000)
-                await self.human_delay()
-            except:
-                pass
 
-    def string_date_to_timestamp(self, date_str):
-        parsed_time = dateparser.parse(date_str)
-        return int(parsed_time.timestamp())
-        
+
     async def human_delay(self, min_delay=2, max_delay=5):
         delay = random.uniform(min_delay, max_delay)
         await asyncio.sleep(delay)
@@ -219,8 +332,16 @@ class ReviewsExtractor:
 
             # Pause like a human reading content
             await asyncio.sleep(random.uniform(0.5, 1.8))
-                
+
+
 if __name__ == "__main__":
-    url=f"https://www.google.com/maps/place/Suited+NYC/@40.7093301,-74.0104175,17z/data=!4m8!3m7!1s0x89c25bec802d50a1:0xe28c89887905242d!8m2!3d40.7093261!4d-74.0078426!9m1!1b1!16s%2Fg%2F11fs2w9t1n?authuser=0&hl=en&entry=ttu&g_ep=EgoyMDI2MDUwNi4wIKXMDSoASAFQAw%3D%3D"
-    extractor = ReviewsExtractor(url)
-    asyncio.run(extractor.extract_reviews())
+    url=f"https://www.google.com/maps/place/Caf%C3%A9+Tranquille/@48.8782772,2.3564293,17z/data=!4m8!3m7!1s0x47e66f6d0b160aff:0x11073147c1c5f162!8m2!3d48.8782772!4d2.3564293!9m1!1b1!16s%2Fg%2F11ss88jt20?authuser=0&hl=en&entry=ttu&g_ep=EgoyMDI2MDUwNi4wIKXMDSoASAFQAw%3D%3D"
+    extractor = ReviewsExtractor(1, url)
+    asyncio.run(extractor.main())
+    ''' 
+    # For testing without running the scraper
+    with open("scraper/data.json", "r") as file:
+        data = json.load(file)
+    extractor.data = data
+    asyncio.run(extractor.store_data())
+    '''
