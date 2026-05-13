@@ -1,40 +1,43 @@
 from camoufox.async_api import AsyncCamoufox
 import asyncio
 import random
-from datetime import datetime,timedelta,timezone
-import dateparser
+from datetime import datetime,timedelta
 from scraper.parser import parse_reviews_response, relative_to_datetime
+#from scraper.inference import ReviewAnalyzer
+from orm.connection import SessionLocal
+from orm.models import Place
+from producer.kafka_producer import KafkaProducerHandler
 import os
-from dotenv import load_dotenv
-from supabase import create_client, Client
-from scraper.inference import ReviewAnalyzer
-import json
 
 class ReviewsExtractor:
 
-    def __init__(self, business_id:str, url: str, language: str = "en", locale: str = "en-US", date_limit = 3):
+    def __init__(self, business_id:str, url: str, language: str = "en", locale: str = "en-US", date_limit = 30):
         
-        # Ensure keys are present before initializing
-        load_dotenv()
-        supabase_url = os.getenv("SUPABASE_URL")
-        supabase_key = os.getenv("SUPABASE_KEY")
+        # databse session
+        self.db = SessionLocal()
         
-        # verify if credentials are available
-        if not supabase_url or not supabase_key:
-            raise ValueError("Supabase credentials not found in environment variables")
-        self.supabase: Client = create_client(supabase_url, supabase_key)
+        # init kafka producer
+        self.producer = KafkaProducerHandler()
         
         self.business_id = business_id
         self.url = url
         self.language = language
         self.locale = locale
+        # day limit for reviews, default to 30 days
         self.date_limit = date_limit
         self.info = None
         self.data = []
         
+        
     async def main(self):
         # extract reviews
         await self.extract_reviews()
+        
+        if not self.data:
+            print("No reviews extracted.")
+            return
+        
+        print(f"Extracted {len(self.data)} reviews.")
         
         # Remove items from self.data where review_text is empty or None
         self.data = [item for item in self.data if item.get("review_text")]
@@ -42,26 +45,17 @@ class ReviewsExtractor:
         # add the business name to each review
         self.data = [{**item, "business_id": self.business_id} for item in self.data]
         
+        
         # update business info
         await self.update_info()
+
+        # send data to kafka
+        self.producer.send_message(
+            topic="reviews",
+            messages=self.data
+        )
         
-        # inference reviews
-        inference = ReviewAnalyzer()
-        for review in self.data:
-            review_text = review.get("review_text", "")
-            if review_text:
-                inference_result = inference.inference(review_text)
-                inference_data = {
-                    "overall_sentiment": inference_result.get("overall_sentiment", ""),
-                    "aspects": inference_result.get("aspects", []),
-                    "main_complaint": inference_result.get("main_complaint", ""),
-                    "summary": inference_result.get("summary", "")
-                }
-                
-                review.update(inference_data)
-        
-        # store data to supabase
-        await self.store_data()
+    
         
     async def extract_info(self, page):
         # extratc rating
@@ -105,45 +99,33 @@ class ReviewsExtractor:
     
     async def update_info(self):
         try:
-            response = (
-                self.supabase.table("gm_places")
-                .update({
-                    "rating": self.info["rating"],
-                    "reviews": self.info["reviews_number"],
-                    "updated_at": datetime.now(timezone.utc).isoformat()
-                })
-                .eq("id", self.business_id)
-                .execute()
+            
+            place = (
+                self.db.query(Place)
+                .filter(Place.id == self.business_id)
+                .first()
             )
-            print(f"Updated business info: {response}")
+
+            place.rating = self.info["rating"]
+            place.reviews = self.info["reviews_number"]
+
+            self.db.commit()
+
+            print(f"Updated business info")
         except Exception as e:
             print(f"Insert update: {e}")
                 
-                
-    async def store_data(self):
-        if not self.data:
-            return
-
-        for i, row in enumerate(self.data):
-
-            try:
-                response = self.supabase.table(
-                    "gm_reviews"
-                ).upsert(
-                    row,
-                    on_conflict="review_id"
-                ).execute()
-
-                print(f"Upserted row {i}: {response}")
-
-            except Exception as e:
-                print(f"Upsert error at row {i}: {e}")
 
     async def extract_reviews(self):
         async with AsyncCamoufox(
                 humanize=True,
                 headless=False,
                 locale=self.locale,
+                args=[
+                    "--no-sandbox",
+                    "--disable-setuid-sandbox",
+                    "--disable-gpu"
+                ]
             ) as browser:
             
             # visite page
@@ -157,6 +139,21 @@ class ReviewsExtractor:
             # extract info
             info = await self.extract_info(page)
             self.info = info
+            
+            await page.screenshot(path=f"screenshots/{self.business_id}_info.png", full_page=True)
+            
+            # 1. Récupérer l'intégralité du code HTML de la page
+            html_content = await page.content()
+            
+            # Définir le dossier de stockage (ex: /app/storage)
+            output_dir = "/app/storage"
+            os.makedirs(output_dir, exist_ok=True)
+            
+            file_path = os.path.join(output_dir, f"place_{self.business_id}.html")
+            
+            # 2. Stocker le contenu dans un fichier HTML
+            with open(file_path, "w", encoding="utf-8") as f:
+                f.write(html_content)
                         
             # click sort button
             sort_btn = await self.sort_reviews(page, language=self.language)
@@ -188,12 +185,14 @@ class ReviewsExtractor:
         
         try:
             # get sort button
-            sort_btn = page.locator(f'button[data-value="{sort_language[language]}"]').first
-            if not sort_btn:
-                raise Exception("sort button is None.")
+            sort_btn = page.locator(f'button[data-value="{sort_language[language]}"]').has_text(f"{sort_language[language]}").first
+            
+            await sort_btn.wait_for(state="attached")
+            
+            await sort_btn.scroll_into_view_if_needed()
             
             # click on sort button
-            await sort_btn.click()
+            await sort_btn.evaluate("button => button.click()")
             await self.human_delay()
             
             return True

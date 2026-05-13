@@ -1,0 +1,26 @@
+services:
+
+  postgres:
+    build: .
+    container_name: postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: root
+      POSTGRES_PASSWORD: root_password
+      POSTGRES_DB: app_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./init:/docker-entrypoint-initdb.d
+    networks:
+      - gmreview_network
+
+volumes:
+  pgdata:
+
+
+networks:
+  gmreview_network:
+    external: true
+  

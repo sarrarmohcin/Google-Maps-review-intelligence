@@ -1,0 +1,9 @@
+celery[redis]
+redis
+dotenv
+dateparser
+camoufox
+flower
+sqlalchemy 
+psycopg2-binary
+kafka-python

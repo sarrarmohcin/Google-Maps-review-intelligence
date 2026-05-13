@@ -1,0 +1,54 @@
+services:
+
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    networks:
+      - gmreview_network
+
+  worker:
+    build: .
+    container_name: celery_worker
+    restart: unless-stopped
+    volumes:
+      - ./app:/app
+    #command: celery -A tasks worker --loglevel=info
+    depends_on:
+      - redis
+    networks:
+      - gmreview_network
+
+  beat:
+    build: .
+    container_name: celery_beat
+    restart: unless-stopped
+    volumes:
+      - ./app:/app
+    command: celery -A tasks beat --loglevel=info
+    depends_on:
+      - redis
+    networks:
+      - gmreview_network
+
+  flower:
+    build: .
+    container_name: flower
+    volumes:
+      - ./app:/app
+    command: celery -A tasks flower --port=5555
+    ports:
+      - "5555:5555"
+    networks:
+      - gmreview_network
+
+volumes:
+  redis_data:
+
+networks:
+  gmreview_network:
+    external: true
