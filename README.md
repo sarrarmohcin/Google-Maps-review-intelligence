@@ -130,6 +130,7 @@ The project is divided into several components, each responsible for a specific 
   - SQL queries for fetching data are defined in `dashboard/queries.py`.
   - The `dashboard/db.py` module handles database connections and query execution.
 
+![dashboard](dashboard/dashboard.png)
 ---
 
 ## How It Works
