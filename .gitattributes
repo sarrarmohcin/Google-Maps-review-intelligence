@@ -1,0 +1,6 @@
+# Ignore generated files or assets
+*.png linguist-vendored
+*.html linguist-vendored
+
+# Force Python classification for specific files
+*.py linguist-language=Python
