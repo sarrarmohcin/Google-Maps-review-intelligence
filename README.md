@@ -99,6 +99,7 @@ The project is divided into several components, each responsible for a specific 
   - Tables:
     - `gm_reviews`: Stores individual reviews with enriched data.
     - `places`: Stores metadata about businesses.
+      Note: to get the place url, go to the place google maps page, click on review tab and copy the url from the browser
   - Materialized Views:
     - `mv_reviewer_stats`: Aggregates reviewer statistics.
     - `mv_business_stats`: Aggregates business-level review statistics.
