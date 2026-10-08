@@ -10,7 +10,7 @@ The system is designed to help businesses understand customer feedback, identify
 
 ## Tech Stack
 - **Scraping:**
-  - Camoufox with cirtual display (xvfb)
+  - Camoufox with virtual display (xvfb)
   - playwright
 - **scheduler:**
   - celery
