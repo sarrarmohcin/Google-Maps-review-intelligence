@@ -13,11 +13,11 @@ The system is designed to help businesses understand customer feedback, identify
 ## Tech Stack
 - **Scraping:**
   - Camoufox with virtual display (xvfb)
-  - playwright
-- **scheduler:**
-  - celery
-  - redis
-  - flower
+  - Playwright
+- **Scheduler:**
+  - Celery
+  - Redis
+  - Flower
 - **Infrastructure:**
   - Python
   - PostgreSQL + SQLAlchemy
@@ -101,7 +101,7 @@ The project is divided into several components, each responsible for a specific 
   - Tables:
     - `gm_reviews`: Stores individual reviews with enriched data.
     - `places`: Stores metadata about businesses.
-      Note: to get the place url, go to the place google maps page, click on review tab and copy the url from the browser
+      Note: to get the place URL, go to the place google maps page, click on review tab and copy the URL from the browser
   - Materialized Views:
     - `mv_reviewer_stats`: Aggregates reviewer statistics.
     - `mv_business_stats`: Aggregates business-level review statistics.
@@ -166,5 +166,5 @@ The project is divided into several components, each responsible for a specific 
 
 1. Clone the repository:
    ```bash
-   git clone <repository-url>
+   git clone https://github.com/sarrarmohcin/Google-Maps-review-intelligence.git
    cd Google-Maps-review-intelligence
