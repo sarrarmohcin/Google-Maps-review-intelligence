@@ -1,5 +1,7 @@
 # Google Maps Review Intelligence
 
+![hero](hero.png)
+
 ## Introduction
 
 Google Maps Review Intelligence is a data pipeline and analytics platform designed to process, analyze, and visualize customer reviews for businesses listed on Google Maps. The platform leverages modern technologies to scrape reviews, analyze sentiment, and provide actionable insights through an interactive dashboard.
